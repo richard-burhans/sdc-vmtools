@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+#
+# quick, fragile, and very dirty
+# needs work
+#
+
+. /lib/smartdc/lib_smartdc_scripts.cfg
+
+create_interface_file () {
+	local device=$1
+	local ip=$2
+
+	cat > "/etc/network/interfaces.d/machine-dependent.${device}" <<- EOF
+	iface $device inet6 static
+	    address $ip
+	    netmask 64
+	    gateway ${ip%:*}:1
+	    accept_ra 0
+	    autoconf 0
+	EOF
+}
+
+$MDATA_GET_BIN sdc:nics | jq -c -r '.[] | select(has("mac") and has("allowed_ips")) | {mac, allowed_ips: .allowed_ips | join(",")} | "\(.mac) \(.allowed_ips)"' |
+while read mac allowed_ips; do
+	device=$(ip -o link show | grep " $mac " | cut -d: -f2 | cut -d@ -f1 | awk '{print $1}')
+	if [ -n "$device" ]; then
+		IFS="," read -ra ips <<< "$allowed_ips"
+		for ip in "${ips[@]}"; do
+			if [[ $ip == *":"* ]]; then
+				create_interface_file "$device" "$ip"
+			fi
+		done
+	fi
+done
+
+exit 0
