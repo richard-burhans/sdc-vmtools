@@ -106,7 +106,7 @@ setup_debian() {
     if [[ -e /etc/network/interfaces.d/machine-dependent.$i ]] ; then
       local ipv6_net=$(cat /etc/network/interfaces.d/machine-dependent.$i | grep address | awk '{print $2}')
       # clean up ipv6
-      sysctl -q -e -w net.ipv6.conf.eth0.accept_ra_defrtr=0
+      sysctl -q -e -w net.ipv6.conf.$i.accept_ra_defrtr=0
       ip -6 address flush scope global dev $i
       ip -6 route flush to ${ipv6_net%:*}:/64 dev $i
       ip -6 route flush default dev $i
