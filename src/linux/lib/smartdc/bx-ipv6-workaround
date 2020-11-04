@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+#
+# workaround ipv6 issues
+#
+
+MDATA_GET_BIN='/usr/sbin/mdata-get'
+IP_BIN='/usr/sbin/ip'
+
+DEFAULT_IPV6_PREFIXLEN=64
+INTERFACES_FILE_PREFIX='/etc/network/interfaces.d/60-ipv6-'
+
+generate_mac_to_ips_map() {
+    "$MDATA_GET_BIN" sdc:nics \
+        | jq --raw-input --compact-output --raw-output '
+            fromjson?
+                | .[]?
+                | select(has("mac") and has("allowed_ips"))
+                | select(any(.allowed_ips[]; contains(":")))
+                | {mac, allowed_ips: .allowed_ips | map(select(. | contains(":"))) | join(",")}
+                | [.mac, .allowed_ips]
+                | @tsv
+        '
+}
+
+get_device_by_mac () {
+    local mac="$1"
+
+    "$IP_BIN" -json link show \
+        | jq --raw-input --compact-output --raw-output --arg mac "$mac" '
+            fromjson?
+                | .[]?
+                | select(.address==$mac)
+                | .ifname
+        '
+}
+
+create_interface_file () {
+    local device="$1"
+    local address="$2"
+    local gateway="$3"
+
+    # wild guess if gateway is not set
+    # probably not the best heuristic
+    gateway="${gateway:-${address%:*}:1}"
+
+    cat > "${INTERFACES_FILE_PREFIX}${device}" <<- EOF
+		iface $device inet6 static
+		    address $address
+		    gateway $gateway
+		    accept_ra 0
+		    autoconf 0
+	EOF
+}
+
+# get list of ipv6 addersses for each interface
+IFS=$'\n' read -ra mac_to_ips_map <<< "$(generate_mac_to_ips_map)"
+
+# get ipv6 prefixlen and gateway
+if [ "${#mac_to_ips_map[@]}" -ge 1 ]; then
+    user_data=$("$MDATA_GET_BIN" user-data)
+    eval "$user_data"
+    IPV6_PREFIXLEN="${IPV6_PREFIXLEN:-$DEFAULT_IPV6_PREFIXLEN}"
+    IPV6_GATEWAY="${IPV6_GATEWAY:-}"
+fi
+
+# create interface file(s)
+for mac_to_ips in "${mac_to_ips_map[@]}"; do
+    IFS=$'\t' read -r mac ip_list <<< "$mac_to_ips"
+
+    device="$(get_device_by_mac $mac)"
+    if [ -n "$device" ]; then
+        IFS=',' read -ra ips <<< "$ip_list"
+
+        for ip in "${ips[@]}"; do
+            create_interface_file "$device" "$ip/$IPV6_PREFIXLEN" "$IPV6_GATEWAY"
+        done
+
+    fi
+done
+
+exit 0
